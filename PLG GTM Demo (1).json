@@ -1,0 +1,721 @@
+{
+  "name": "PLG GTM Demo",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\nconst lead = item;\nconst u = item.usage || {};\n\nlet icp_score = 0;\nlet plg_score = 0;\nlet icp_signals = [];\nlet plg_signals = [];\nlet flags = [];\n\n// ═══════════════════════════════════════════\n// BLOCK A — ICP / FIRMOGRAPHIC SCORE (0–100)\n// ═══════════════════════════════════════════\n\n// A1. Industry fit (0–30)\nconst industryMap = {\n  'dtc':30,'direct to consumer':30,'ecommerce':30,'e-commerce':30,\n  'fashion':28,'apparel':28,'marketing agency':27,'creative agency':27,\n  'agency':25,'media':24,'publishing':22,'saas':20,'software':18,\n  'retail':18,'cpg':18,'food & beverage':16,\n  'healthcare':6,'finance':4,'legal':3,'manufacturing':4\n};\nconst ind = (lead.industry||'').toLowerCase();\nlet a1 = 0;\nfor (const [k,v] of Object.entries(industryMap)) {\n  if (ind.includes(k)) { a1 = v; break; }\n}\nicp_score += a1;\nif (a1 >= 25) icp_signals.push(`Strong industry: ${lead.industry}`);\nelse if (a1 >= 15) icp_signals.push(`Moderate industry: ${lead.industry}`);\nelse flags.push(`Weak industry fit: ${lead.industry}`);\n\n// A2. Company size (0–25)\nconst emp = parseInt(lead.employees||0);\nlet a2 = 0;\nif (emp>=50&&emp<=200)      { a2=25; icp_signals.push('Ideal size 50–200'); }\nelse if (emp<=500)           { a2=20; icp_signals.push('Good size 200–500'); }\nelse if (emp<=1000)          { a2=15; icp_signals.push('Acceptable size 500–1k'); }\nelse if (emp<=5000)          { a2=8;  flags.push('Large org — longer sales cycle'); }\nelse                         { a2=2;  flags.push('Enterprise — likely disqualify'); }\nicp_score += a2;\n\n// A3. Title / persona (0–25)\nconst title = (lead.title||'').toLowerCase();\nconst titleMap = [\n  ['creative director',25],['head of creative',25],['vp creative',25],\n  ['head of brand',23],['brand director',23],['content director',22],\n  ['creative operations',25],['head of content',22],\n  ['marketing director',20],['vp marketing',20],['cmo',20],\n  ['creative manager',18],['brand manager',18],['content manager',18],\n  ['social media manager',14],['marketing manager',14],['designer',10]\n];\nlet a3 = 0;\nfor (const [k,v] of titleMap) { if (title.includes(k)) { a3=v; break; } }\nicp_score += a3;\nif (a3>=20) icp_signals.push(`Decision-maker: ${lead.title}`);\nelse if (a3>=12) icp_signals.push(`Relevant title: ${lead.title}`);\nelse flags.push(`Title not core ICP: ${lead.title}`);\n\n// A4. Tech stack displacement signals (0–10)\nconst stack = (lead.tech_stack||'').toLowerCase();\nconst goodTools = ['dropbox','google drive','figma','adobe','frame.io','bynder','brandfolder'];\nconst alreadyAir = ['air.inc','airhq'];\nlet a4 = 0;\nfor (const t of goodTools) { if (stack.includes(t)) { a4 = Math.min(a4+3, 10); icp_signals.push(`Displacement: ${t}`); } }\nfor (const t of alreadyAir) { if (stack.includes(t)) { a4 = -99; flags.push('Already Air customer'); break; } }\nicp_score += a4;\n\n// A5. Geography (0–10)\nconst loc = (lead.location||'').toLowerCase();\nlet a5 = loc.includes('united states')||loc.includes('usa')||loc.includes(' us') ? 10\n         : ['uk','canada','australia','united kingdom'].some(c=>loc.includes(c)) ? 7 : 3;\nicp_score += a5;\nif (a5===10) icp_signals.push('US market');\n\n// Cap ICP\nicp_score = Math.min(100, Math.max(0, icp_score));\n\n// ═══════════════════════════════════════════\n// BLOCK B — PLG / BEHAVIORAL SCORE (0–100)\n// ═══════════════════════════════════════════\n\n// B1. Storage pressure (0–25) — strongest PQL signal\nconst storageUsed = parseFloat(u.storage_used_gb||0);\nconst storageLimit = parseFloat(u.storage_limit_gb||5);\nconst storagePct = storageLimit > 0 ? storageUsed / storageLimit : 0;\nconst limitHits = parseInt(u.storage_limit_hit_count||0);\nlet b1 = 0;\nif (limitHits >= 3)          { b1=25; plg_signals.push(`Hit storage limit ${limitHits}x — hot PQL`); }\nelse if (limitHits >= 1)     { b1=18; plg_signals.push(`Hit storage limit ${limitHits}x`); }\nelse if (storagePct >= 0.85) { b1=14; plg_signals.push(`${Math.round(storagePct*100)}% storage used`); }\nelse if (storagePct >= 0.6)  { b1=8;  plg_signals.push(`${Math.round(storagePct*100)}% storage used`); }\nelse if (u.plan === 'business') { b1=5; } // paid — no storage pressure but healthy\nplg_score += b1;\n\n// B2. Team expansion signals (0–20)\nconst invited = parseInt(u.team_members_invited||0);\nconst teamSize = parseInt(u.team_size||1);\nlet b2 = 0;\nif (invited >= 4)            { b2=20; plg_signals.push(`Invited ${invited} teammates — viral expansion`); }\nelse if (invited >= 2)       { b2=14; plg_signals.push(`Invited ${invited} teammates`); }\nelse if (invited >= 1)       { b2=8;  plg_signals.push('Invited 1 teammate'); }\nif (teamSize >= 5)           { b2 = Math.min(b2+5, 20); plg_signals.push(`Team of ${teamSize} active`); }\nplg_score += b2;\n\n// B3. Feature depth / power usage (0–20)\nlet b3 = 0;\nif (u.ai_search_used==='true')            { b3+=6; plg_signals.push('Using AI search'); }\nif (parseInt(u.approval_workflows_used||0)>=5) { b3+=6; plg_signals.push(`${u.approval_workflows_used} approval workflows`); }\nelse if (parseInt(u.approval_workflows_used||0)>=1) { b3+=3; plg_signals.push('Using approval workflows'); }\nif (u.desktop_app_installed==='true')     { b3+=4; plg_signals.push('Desktop app installed'); }\nif (u.canvas_used==='true')               { b3+=4; plg_signals.push('Using Canvas (AI feature)'); }\nb3 = Math.min(b3, 20);\nplg_score += b3;\n\n// B4. Engagement frequency (0–20)\nconst daysActive = parseInt(u.days_active_30d||0);\nconst lastActive = parseInt(u.last_active_days_ago||99);\nlet b4 = 0;\nif (daysActive >= 20)        { b4=15; plg_signals.push(`Active ${daysActive}/30 days`); }\nelse if (daysActive >= 12)   { b4=10; plg_signals.push(`Active ${daysActive}/30 days`); }\nelse if (daysActive >= 6)    { b4=5; }\nelse                         { flags.push(`Low engagement: only ${daysActive} active days`); }\nif (lastActive <= 1)         { b4+=5; plg_signals.push('Active today or yesterday'); }\nelse if (lastActive > 10)    { flags.push(`Went dark ${lastActive} days ago`); }\nb4 = Math.min(b4, 20);\nplg_score += b4;\n\n// B5. Sharing / collaboration breadth (0–15)\nconst shared = parseInt(u.assets_shared_externally||0);\nlet b5 = 0;\nif (shared >= 30)            { b5=15; plg_signals.push(`${shared} assets shared externally`); }\nelse if (shared >= 10)       { b5=10; plg_signals.push(`${shared} assets shared externally`); }\nelse if (shared >= 3)        { b5=5; }\nplg_score += b5;\n\n// Cap PLG\nplg_score = Math.min(100, Math.max(0, plg_score));\n\n// ═══════════════════════════════════════════\n// COMPOSITE SCORE + MOTION CLASSIFICATION\n// ═══════════════════════════════════════════\n// Weighted: 40% ICP fit, 60% PLG behavior\nconst composite = Math.round(icp_score * 0.40 + plg_score * 0.60);\n\n// Motion classification\nlet motion, tier, needs_ai;\nconst plan = (u.plan||'free');\n\nif (plan === 'business' && plg_score >= 50) {\n  motion = 'Expansion';\n} else if (plan === 'free' && composite >= 65) {\n  motion = 'PQL';\n} else if (composite >= 40) {\n  motion = 'Churn';\n} else if (flags.includes('Already Air customer')) {\n  motion = 'Existing Customer';\n} else {\n  motion = 'Disqualify';\n}\n\nif (composite >= 70)      { tier = 'A'; needs_ai = false; }\nelse if (composite >= 50) { tier = 'B'; needs_ai = true; }\nelse if (composite >= 35) { tier = 'C'; needs_ai = true; }\nelse                      { tier = 'D'; needs_ai = false; }\n\nreturn {\n  ...lead,\n  icp_score,\n  plg_score,\n  composite_score: composite,\n  tier,\n  motion,\n  needs_ai,\n  icp_signals,\n  plg_signals,\n  flags\n};"
+      },
+      "id": "b4930399-8bd0-473c-b6a1-31384964803a",
+      "name": "PLG + ICP Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        176
+      ],
+      "notes": "Dual-track scoring engine. Block A scores firmographic ICP fit (0–100). Block B scores PLG behavioral signals (0–100). Composite = 40% ICP + 60% PLG. Classifies each account into a motion: PQL, Expansion, Nurture, or Disqualify."
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.motion }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "PQL"
+            },
+            {
+              "value2": "Expansion",
+              "output": 1
+            },
+            {
+              "value2": "Churn",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 3
+      },
+      "id": "3106c40b-9018-472f-95b5-959bc160fd35",
+      "name": "Route by Motion",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        368,
+        144
+      ],
+      "notes": "Routes each account to a different downstream path based on its motion. PQL → Claude writes outreach trigger. Expansion → Claude writes upsell angle. Nurture → Claude writes re-engagement note. Disqualify → skip AI, write directly to CRM as disqualified."
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\nreturn [{\n  json: {\n    account_id:         item.account_id || '',\n    email:              item.email || '',\n    company:            item.company || item.company_name || '',\n    title:              item.title || item.job_title || '',\n    motion:             'Disqualify',\n    tier:               item.tier || 'D',\n    icp_score:          item.icp_score || 0,\n    plg_score:          item.plg_score || 0,\n    composite_score:    item.composite_score || 0,\n    plan:               item.plan || 'free',\n    icp_signals:        Array.isArray(item.icp_signals) ? item.icp_signals.join(', ') : (item.icp_signals || ''),\n    plg_signals:        Array.isArray(item.plg_signals) ? item.plg_signals.join(', ') : (item.plg_signals || ''),\n    flags:              Array.isArray(item.flags) ? item.flags.join(', ') : (item.flags || ''),\n    why_now:            'Does not meet ICP or usage threshold.',\n    pain_hypothesis:    'Account does not match Air\\'s core ICP criteria.',\n    outreach_hook:      '',\n    recommended_action: 'Remove from pipeline',\n    urgency:            'Low'\n  }\n}];"
+      },
+      "id": "8e5bbf3f-d5d9-41ba-93dc-ab1773285b94",
+      "name": "Disqualify (no AI)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        736
+      ],
+      "notes": "Disqualified accounts skip Claude entirely and get a default brief."
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "leads",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -496,
+        48
+      ],
+      "id": "079f53ce-e86a-4520-947c-3307490f6ec1",
+      "name": "Leads"
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "usage",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -496,
+        288
+      ],
+      "id": "f3735dfb-f512-42c4-ad79-b4167deb991c",
+      "name": "Usage"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -272,
+        176
+      ],
+      "id": "540dd9bb-47fd-4622-803d-d549ccc3fd82",
+      "name": "Merge Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Separate leads from usage using a field only leads have\nconst leads = $input.all().filter(i => i.json.company);\nconst usageItems = $input.all().filter(i => !i.json.company);\n\n// Build a lookup map from usage keyed by account_id\nconst usageMap = {};\nusageItems.forEach(i => {\n  usageMap[i.json.account_id] = i.json;\n});\n\n// Return one item per lead with usage nested inside\nreturn leads.map(item => ({\n  json: {\n    ...item.json,\n    usage: usageMap[item.json.account_id] || {}\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        176
+      ],
+      "id": "08bc201b-482a-4192-af56-16b3e60bd7bd",
+      "name": "Join Data"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "4a638ae5-a8ab-4f63-bd1e-7ff01bf7cce0",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        176
+      ],
+      "id": "c6e406bd-7a16-4de1-b005-18a681f6307e",
+      "name": "Webhook",
+      "webhookId": "4a638ae5-a8ab-4f63-bd1e-7ff01bf7cce0",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        624,
+        -416
+      ],
+      "id": "9e6d3f7a-f63d-4afe-8671-c934b8e4adb6",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        624,
+        -64
+      ],
+      "id": "4feba309-2f98-4b1d-8db1-54aead110944",
+      "name": "Loop Over Items3"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        784,
+        720
+      ],
+      "id": "d89b0fbe-fa4a-4763-b614-bb210ca7e1ab",
+      "name": "Loop Over Items4"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        624,
+        288
+      ],
+      "id": "cbc924e5-5ec7-47a7-ba0e-5ba69b757cc1",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "numberInputs": 4
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1568,
+        192
+      ],
+      "id": "cb391b0d-fc1e-4115-8162-733c015ad050",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        208
+      ],
+      "id": "7433e6f0-e911-43ab-bf73-dcf1d2d4b3ce",
+      "name": "Write to Data Warehouse"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nreturn $input.all().map(item => ({\n  json: {\n    crm_contact_email: item.json.email,\n    crm_lead_score: item.json.final_score,\n    crm_motion: item.json.motion,\n    crm_why_now: item.json.output?.why_now,\n    crm_pain_hypothesis: item.json.output?.pain_hypothesis,\n    crm_outreach_hook: item.json.output?.outreach_hook,\n    crm_recommendation: item.json.recommendation,\n    synced_at: new Date().toISOString()\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        208
+      ],
+      "id": "15a0e2a4-6e94-433a-a26c-50155fd3d77a",
+      "name": "Map to CRM fields"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=account_id: {{ $json.account_id }}\nemail: {{ $json.email }}\ncompany: {{ $json.company }}\ntitle: {{ $json.title }}\nmotion: {{ $json.motion }}\ntier: {{ $json.tier }}\nicp_score: {{ $json.icp_score }}\nplg_score: {{ $json.plg_score }}\ncomposite_score: {{ $json.composite_score }}\nplan: {{ $json.plan }}\nicp_signals: {{ $json.icp_signals.join ? $json.icp_signals.join(', ') : $json.icp_signals }}\nplg_signals: {{ $json.plg_signals.join ? $json.plg_signals.join(', ') : $json.plg_signals }}\nflags: {{ $json.flags.join ? $json.flags.join(', ') : $json.flags }}\n\nThis is a free-tier user showing strong product usage signals. Write a why_now, pain_hypothesis, and personalized outreach_hook for a sales rep to use. Return all fields above in the JSON exactly as provided, plus your analysis fields.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a GTM analyst for Air.inc.  Respond with a single JSON object only.  No markdown. No backticks. No explanation. Start with { and end with }."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        832,
+        -400
+      ],
+      "id": "79d43e17-db92-4eae-bc6a-fde5d1a2310d",
+      "name": "PQL Motion"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=account_id: {{ $json.account_id }}\nemail: {{ $json.email }}\ncompany: {{ $json.company }}\ntitle: {{ $json.title }}\nmotion: {{ $json.motion }}\ntier: {{ $json.tier }}\nicp_score: {{ $json.icp_score }}\nplg_score: {{ $json.plg_score }}\ncomposite_score: {{ $json.composite_score }}\nplan: {{ $json.plan }}\nicp_signals: {{ $json.icp_signals.join ? $json.icp_signals.join(', ') : $json.icp_signals }}\nplg_signals: {{ $json.plg_signals.join ? $json.plg_signals.join(', ') : $json.plg_signals }}\nflags: {{ $json.flags.join ? $json.flags.join(', ') : $json.flags }}\n\nThis is a paying customer showing strong usage and hitting plan limits. Write a why_now, pain_hypothesis, and outreach_hook for the CSM to open an upgrade conversation. Return all fields above in the JSON exactly as provided, plus your analysis fields.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a GTM analyst for Air.inc — an AI-powered Creative Operations platform. Analyze this paying customer and identify expansion opportunity.  Respond with ONLY a valid JSON object. No markdown. No backticks. No explanation. Start with { and end with }.  Return exactly these fields with these exact key names: account_id, email, company, title, motion, tier, icp_score, plg_score, composite_score, plan, icp_signals, plg_signals, flags, why_now, pain_hypothesis, outreach_hook, recommended_action, urgency  Rules: - Copy account_id, email, company, title, tier, icp_score, plg_score, composite_score, plan, icp_signals, plg_signals, flags exactly as provided in the input - motion must be exactly \"Expansion\" - recommended_action must be exactly \"Upsell to higher plan\" - urgency must be exactly \"High\", \"Medium\", or \"Low\" - why_now: explain why now is the right moment to have an upgrade conversation - pain_hypothesis: what pain is this customer experiencing that a higher plan would solve - outreach_hook: one personalized sentence the CSM can send to open the upgrade conversation"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        832,
+        -48
+      ],
+      "id": "1561adf3-4d39-408f-ba54-86d6fe19f60e",
+      "name": "Expansion Motion"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=account_id: {{ $json.account_id }}\nemail: {{ $json.email }}\ncompany: {{ $json.company }}\ntitle: {{ $json.title }}\nmotion: {{ $json.motion }}\ntier: {{ $json.tier }}\nicp_score: {{ $json.icp_score }}\nplg_score: {{ $json.plg_score }}\ncomposite_score: {{ $json.composite_score }}\nplan: {{ $json.plan }}\nicp_signals: {{ $json.icp_signals.join ? $json.icp_signals.join(', ') : $json.icp_signals }}\nplg_signals: {{ $json.plg_signals.join ? $json.plg_signals.join(', ') : $json.plg_signals }}\nflags: {{ $json.flags.join ? $json.flags.join(', ') : $json.flags }}\n\nThis account has declining engagement. If plan is free — they signed up but went cold before converting. If plan is business — they are a paying customer at risk of cancelling. Write a why_now, pain_hypothesis, and re-engagement outreach_hook. Return all fields above in the JSON exactly as provided, plus your analysis fields.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a GTM analyst for Air.inc — an AI-powered Creative Operations platform. Analyze this account showing declining engagement.  Respond with ONLY a valid JSON object. No markdown. No backticks. No explanation. Start with { and end with }.  Return exactly these fields with these exact key names: account_id, email, company, title, motion, tier, icp_score, plg_score, composite_score, plan, icp_signals, plg_signals, flags, why_now, pain_hypothesis, outreach_hook, recommended_action, urgency  Rules: - Copy account_id, email, company, title, tier, icp_score, plg_score, composite_score, plan, icp_signals, plg_signals, flags exactly as provided in the input - motion must be exactly \"Churn\" - recommended_action must be exactly \"Re-engagement\" - urgency must be exactly \"High\", \"Medium\", or \"Low\" - why_now: explain why re-engagement is urgent right now - pain_hypothesis: what likely caused this account to go cold - outreach_hook: one personalized sentence to bring this account back"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        800,
+        304
+      ],
+      "id": "dc20d8b0-a17c-433e-89f5-1891d8d4ff2e",
+      "name": "Churn Motion"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nconst response = $input.first().json;\n\n// Extract raw text from LLM response\nconst text = response.text \n  || response.message?.content \n  || response.content\n  || response.output\n  || JSON.stringify(response);\n\n// Strip markdown if model wrapped it\nconst cleaned = text\n  .replace(/```json/gi, '')\n  .replace(/```/g, '')\n  .trim();\n\n// Parse JSON\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  // Fallback — return what we have\n  parsed = {\n    account_id:         $('PLG + ICP Scoring').item.json.account_id || '',\n    email:              $('PLG + ICP Scoring').item.json.email || '',\n    company:            $('PLG + ICP Scoring').item.json.company || '',\n    title:              $('PLG + ICP Scoring').item.json.title || '',\n    motion:             $('PLG + ICP Scoring').item.json.motion || '',\n    tier:               $('PLG + ICP Scoring').item.json.tier || '',\n    icp_score:          $('PLG + ICP Scoring').item.json.icp_score || 0,\n    plg_score:          $('PLG + ICP Scoring').item.json.plg_score || 0,\n    composite_score:    $('PLG + ICP Scoring').item.json.composite_score || 0,\n    plan:               $('PLG + ICP Scoring').item.json.plan || '',\n    icp_signals:        '',\n    plg_signals:        '',\n    flags:              '',\n    why_now:            text,\n    pain_hypothesis:    '',\n    outreach_hook:      '',\n    recommended_action: 'Review manually',\n    urgency:            'Low'\n  };\n}\n\nreturn [{ json: parsed }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -400
+      ],
+      "id": "3b4faff9-1122-4216-b5a6-54ae7331fa3b",
+      "name": "Parse Output"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nconst response = $input.first().json;\n\n// Extract raw text from LLM response\nconst text = response.text \n  || response.message?.content \n  || response.content\n  || response.output\n  || JSON.stringify(response);\n\n// Strip markdown if model wrapped it\nconst cleaned = text\n  .replace(/```json/gi, '')\n  .replace(/```/g, '')\n  .trim();\n\n// Parse JSON\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  // Fallback — return what we have\n  parsed = {\n    account_id:         $('PLG + ICP Scoring').item.json.account_id || '',\n    email:              $('PLG + ICP Scoring').item.json.email || '',\n    company:            $('PLG + ICP Scoring').item.json.company || '',\n    title:              $('PLG + ICP Scoring').item.json.title || '',\n    motion:             $('PLG + ICP Scoring').item.json.motion || '',\n    tier:               $('PLG + ICP Scoring').item.json.tier || '',\n    icp_score:          $('PLG + ICP Scoring').item.json.icp_score || 0,\n    plg_score:          $('PLG + ICP Scoring').item.json.plg_score || 0,\n    composite_score:    $('PLG + ICP Scoring').item.json.composite_score || 0,\n    plan:               $('PLG + ICP Scoring').item.json.plan || '',\n    icp_signals:        '',\n    plg_signals:        '',\n    flags:              '',\n    why_now:            text,\n    pain_hypothesis:    '',\n    outreach_hook:      '',\n    recommended_action: 'Review manually',\n    urgency:            'Low'\n  };\n}\n\nreturn [{ json: parsed }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        -48
+      ],
+      "id": "0f6b3831-e601-4991-b4c2-21311d4ed3e0",
+      "name": "Parse Output2"
+    },
+    {
+      "parameters": {
+        "model": "gpt-5.4-mini",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        832,
+        -240
+      ],
+      "id": "fff61317-55ec-42a4-b58f-620ea584432f",
+      "name": "Azure OpenAI Chat Model",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "njMmOgKyafuRzDDV",
+          "name": "NEW Azure OpenAI gpt 5.4-mini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "gpt-5.4-mini",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        832,
+        128
+      ],
+      "id": "3d3edec0-4706-47af-8b23-5a7ab4d867dd",
+      "name": "Azure OpenAI Chat Model1",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "njMmOgKyafuRzDDV",
+          "name": "NEW Azure OpenAI gpt 5.4-mini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "gpt-5.4-mini",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        832,
+        512
+      ],
+      "id": "d8cb627f-1b48-42fa-9438-727e242460d1",
+      "name": "Azure OpenAI Chat Model2",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "njMmOgKyafuRzDDV",
+          "name": "NEW Azure OpenAI gpt 5.4-mini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nconst response = $input.first().json;\n\n// Extract raw text from LLM response\nconst text = response.text \n  || response.message?.content \n  || response.content\n  || response.output\n  || JSON.stringify(response);\n\n// Strip markdown if model wrapped it\nconst cleaned = text\n  .replace(/```json/gi, '')\n  .replace(/```/g, '')\n  .trim();\n\n// Parse JSON\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  // Fallback — return what we have\n  parsed = {\n    account_id:         $('PLG + ICP Scoring').item.json.account_id || '',\n    email:              $('PLG + ICP Scoring').item.json.email || '',\n    company:            $('PLG + ICP Scoring').item.json.company || '',\n    title:              $('PLG + ICP Scoring').item.json.title || '',\n    motion:             $('PLG + ICP Scoring').item.json.motion || '',\n    tier:               $('PLG + ICP Scoring').item.json.tier || '',\n    icp_score:          $('PLG + ICP Scoring').item.json.icp_score || 0,\n    plg_score:          $('PLG + ICP Scoring').item.json.plg_score || 0,\n    composite_score:    $('PLG + ICP Scoring').item.json.composite_score || 0,\n    plan:               $('PLG + ICP Scoring').item.json.plan || '',\n    icp_signals:        '',\n    plg_signals:        '',\n    flags:              '',\n    why_now:            text,\n    pain_hypothesis:    '',\n    outreach_hook:      '',\n    recommended_action: 'Review manually',\n    urgency:            'Low'\n  };\n}\n\nreturn [{ json: parsed }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        304
+      ],
+      "id": "e660875b-335e-484f-a9d3-87b3ef67739e",
+      "name": "Parse Output1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "PLG + ICP Scoring": {
+      "main": [
+        [
+          {
+            "node": "Route by Motion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Motion": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disqualify (no AI)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leads": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Usage": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Data": {
+      "main": [
+        [
+          {
+            "node": "Join Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Join Data": {
+      "main": [
+        [
+          {
+            "node": "PLG + ICP Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PQL Motion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items4": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 3
+          }
+        ],
+        [
+          {
+            "node": "Disqualify (no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items3": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Expansion Motion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ],
+        [
+          {
+            "node": "Churn Motion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Write to Data Warehouse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write to Data Warehouse": {
+      "main": [
+        [
+          {
+            "node": "Map to CRM fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map to CRM fields": {
+      "main": [
+        []
+      ]
+    },
+    "PQL Motion": {
+      "main": [
+        [
+          {
+            "node": "Parse Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expansion Motion": {
+      "main": [
+        [
+          {
+            "node": "Parse Output2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Churn Motion": {
+      "main": [
+        [
+          {
+            "node": "Parse Output1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Output": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Output2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "PQL Motion",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Expansion Motion",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Churn Motion",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Output1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "9ec9d503-fc05-4afd-85cb-c7f299e9c665",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cf02b974ce0e8e1fa72588d0f344508a0a3834637c6ff0b698646fa56fca21d7"
+  },
+  "nodeGroups": [],
+  "id": "P4A5ArCHLrMh1ziD",
+  "tags": []
+}
